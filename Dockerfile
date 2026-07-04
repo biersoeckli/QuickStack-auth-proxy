@@ -1,16 +1,28 @@
-FROM oven/bun:1-alpine
+FROM golang:1.22-alpine AS builder
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
 
 ARG VERSION_ARG=unknown
-ENV VERSION=${VERSION_ARG}-arm64
+RUN CGO_ENABLED=0 GOOS=linux go build \
+	-ldflags="-s -w -X main.version=${VERSION_ARG}" \
+	-o /out/quickstack-auth-proxy .
+
+FROM alpine:3.20
+
+RUN addgroup -S app && adduser -S -G app app
 
 WORKDIR /app
 
-COPY package.json ./
-RUN bun install --production
+COPY --from=builder /out/quickstack-auth-proxy /app/quickstack-auth-proxy
 
-COPY src/ ./src/
-
-ENV NODE_ENV=production
+ENV PORT=3000
 EXPOSE 3000
 
-CMD ["bun", "run", "src/index.ts"]
+USER app
+
+ENTRYPOINT ["/app/quickstack-auth-proxy"]
