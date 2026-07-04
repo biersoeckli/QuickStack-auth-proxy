@@ -1,4 +1,4 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /src
 
@@ -12,7 +12,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 	-ldflags="-s -w -X main.version=${VERSION_ARG}" \
 	-o /out/quickstack-auth-proxy .
 
-FROM alpine:3.20
+FROM alpine:3.24
 
 RUN addgroup -S app && adduser -S -G app app
 

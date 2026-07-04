@@ -30,28 +30,16 @@ func main() {
 	}
 }
 
-// handleRequest mirrors the Bun implementation's handleRequest(): dev bypass,
-// query-token → session-cookie exchange, cookie verification, then proxying.
+// handleRequest mirrors the Bun implementation's handleRequest(): query-token
+// to session-cookie exchange, cookie verification, then proxying.
 // (Identical logic to the extended version - just without activity tracking
 // or the reaper wiring.)
 func handleRequest(rp http.Handler) http.HandlerFunc {
-	devClaims := &auth.AgentClaims{
-		AgentID:   "dev-agent",
-		ClaimID:   envOr("QS_DEV_CLAIM_ID", "dev-claim"),
-		Namespace: envOr("QS_DEV_NAMESPACE", "default"),
-	}
-	devClaims.Subject = "dev"
-
 	return func(w http.ResponseWriter, r *http.Request) {
 		forwardedURI := auth.ForwardedURI(r)
 		forwardedURL, err := auth.ParseForwardedURL(forwardedURI)
 		if err != nil {
 			http.Error(w, "Bad Request", http.StatusBadRequest)
-			return
-		}
-
-		if os.Getenv("AUTH_DISABLED") == "true" {
-			serve(w, r, rp, devClaims, forwardedURL)
 			return
 		}
 
@@ -104,11 +92,4 @@ func serve(w http.ResponseWriter, r *http.Request, rp http.Handler, claims *auth
 	ctx := proxy.WithClaims(r.Context(), claims)
 	ctx = proxy.WithForwardedURL(ctx, forwardedURL)
 	rp.ServeHTTP(w, r.WithContext(ctx))
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }
