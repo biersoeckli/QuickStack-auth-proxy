@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	Issuer     = "agent-auth-proxy"
-	CookieName = "aap-session"
+	Issuer     = "quickstack-auth-proxy"
+	CookieName = "qs-auth-proxy-session"
 )
 
 // AgentClaims mirrors AgentAccessTokenPayload from the Bun implementation.

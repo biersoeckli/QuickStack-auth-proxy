@@ -71,9 +71,12 @@ func handleRequest(rp http.Handler) http.HandlerFunc {
 			q.Del("token")
 			forwardedURL.RawQuery = q.Encode()
 
-			location := auth.ExternalOrigin(r) + forwardedURL.Path
+			location := auth.ExternalOrigin(r) + forwardedURL.EscapedPath()
 			if forwardedURL.RawQuery != "" {
 				location += "?" + forwardedURL.RawQuery
+			}
+			if forwardedURL.Fragment != "" {
+				location += "#" + forwardedURL.EscapedFragment()
 			}
 
 			http.SetCookie(w, auth.SessionCookie(sessionToken, r))
