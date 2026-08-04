@@ -1,0 +1,105 @@
+name: Canary - Build and Push Auth Proxy Image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auth-proxy-canary
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests
+        run: go test ./...
+
+  build-and-push-amd64:
+    runs-on: ubuntu-24.04
+    needs: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.REGISTRY_USER }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Build and push amd64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.amd64
+          push: true
+          platforms: linux/amd64
+          build-args: |
+            VERSION_ARG=canary-${{ github.run_number }}
+          tags: quickstack/auth-proxy:canary-amd64
+
+  build-and-push-arm64:
+    runs-on: ubuntu-24.04-arm
+    needs: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.REGISTRY_USER }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Build and push arm64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.arm64
+          push: true
+          platforms: linux/arm64
+          build-args: |
+            VERSION_ARG=canary-${{ github.run_number }}
+          tags: quickstack/auth-proxy:canary-arm64
+
+  publish-manifest:
+    runs-on: ubuntu-latest
+    needs: [build-and-push-amd64, build-and-push-arm64]
+    steps:
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.REGISTRY_USER }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create multi-architecture canary manifest
+        run: |
+          docker buildx imagetools create -t quickstack/auth-proxy:canary \
+            quickstack/auth-proxy:canary-amd64 \
+            quickstack/auth-proxy:canary-arm64
+          docker buildx imagetools inspect quickstack/auth-proxy:canary
