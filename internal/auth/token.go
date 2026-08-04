@@ -84,6 +84,9 @@ func VerifyAccessToken(tokenStr string) (*AgentClaims, error) {
 	if err != nil {
 		return nil, err
 	}
+	if claims.ID == "" || claims.ExpiresAt == nil {
+		return nil, errors.New("invalid access token payload. Missing jti or exp")
+	}
 	if isAccessTokenConsumed(claims.ID) {
 		return nil, errors.New("access token has already been consumed")
 	}
@@ -107,7 +110,7 @@ func parseAndValidate(tokenStr string, secret []byte) (*AgentClaims, error) {
 	if err != nil || !token.Valid {
 		return nil, fmt.Errorf("invalid token: %w", err)
 	}
-	if claims.AgentID == "" || claims.ClaimID == "" || claims.Namespace == "" || claims.ID == "" {
+	if claims.AgentID == "" || claims.ClaimID == "" || claims.Namespace == "" {
 		return nil, errors.New("invalid token payload")
 	}
 	return claims, nil

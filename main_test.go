@@ -174,3 +174,53 @@ func TestTokenRedirectSetsOriginalSessionCookie(t *testing.T) {
 		t.Fatalf("replay status = %d, want %d", replayRecorder.Code, http.StatusUnauthorized)
 	}
 }
+
+func TestTokenExchangeSessionRequestIsProxied(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+
+	now := time.Now()
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, auth.AgentClaims{
+		AgentID: "agent-1", ClaimID: "claim-1", Namespace: "project-1",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer: auth.Issuer, ID: "access-token-session-proxy-test",
+			IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
+		},
+	})
+	tokenString, err := token.SignedString([]byte("test-secret"))
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+
+	proxyCalled := false
+	backend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := handleRequest(backend)
+
+	exchangeReq := httptest.NewRequest(http.MethodGet, "/app?token="+tokenString, nil)
+	exchangeReq.Header.Set("X-Forwarded-Proto", "https")
+	exchangeReq.Header.Set("X-Forwarded-Host", "sandbox.example.test")
+	exchangeRec := httptest.NewRecorder()
+	handler.ServeHTTP(exchangeRec, exchangeReq)
+
+	if exchangeRec.Code != http.StatusFound {
+		t.Fatalf("exchange status = %d, want %d", exchangeRec.Code, http.StatusFound)
+	}
+	cookies := exchangeRec.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("exchange cookies = %d, want 1", len(cookies))
+	}
+
+	sessionReq := httptest.NewRequest(http.MethodGet, "/app", nil)
+	sessionReq.AddCookie(cookies[0])
+	sessionRec := httptest.NewRecorder()
+	handler.ServeHTTP(sessionRec, sessionReq)
+
+	if sessionRec.Code != http.StatusNoContent {
+		t.Fatalf("session status = %d, want %d", sessionRec.Code, http.StatusNoContent)
+	}
+	if !proxyCalled {
+		t.Fatal("authenticated session request was not passed to the proxy")
+	}
+}
