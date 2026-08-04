@@ -1,4 +1,4 @@
-FROM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
 WORKDIR /src
 
@@ -8,7 +8,9 @@ RUN go mod download
 COPY . .
 
 ARG VERSION_ARG=unknown
-RUN CGO_ENABLED=0 GOOS=linux go build \
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
 	-ldflags="-s -w -X main.version=${VERSION_ARG}" \
 	-o /out/quickstack-auth-proxy .
 
