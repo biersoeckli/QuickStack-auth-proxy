@@ -1,15 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/yourorg/agent-auth-proxy/internal/auth"
+	"github.com/yourorg/agent-auth-proxy/internal/proxy"
 )
 
 type debugResponse struct {
@@ -20,10 +25,16 @@ type debugResponse struct {
 	} `json:"debug"`
 }
 
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
 func signedAccessToken(t *testing.T, secret, id string, expiresAt time.Time) string {
 	t.Helper()
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, auth.AgentClaims{
-		AgentID: "agent-1", ClaimID: "claim-1", Namespace: "project-1",
+		AgentID: "agent-1", ClaimID: "claim-1", Namespace: "project-1", Port: 8080,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer: auth.Issuer, ID: id, IssuedAt: jwt.NewNumericDate(time.Now()), ExpiresAt: jwt.NewNumericDate(expiresAt),
 		},
@@ -126,6 +137,7 @@ func TestTokenRedirectSetsOriginalSessionCookie(t *testing.T) {
 		AgentID:   "agent-base-agent-c5bbc",
 		ClaimID:   "ac-agent-base-agent-c5bbc-82393158",
 		Namespace: "proj-agent-test-1-2cd39535",
+		Port:      8080,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   "jan.meier@ost.ch",
 			Issuer:    auth.Issuer,
@@ -180,7 +192,7 @@ func TestTokenExchangeSessionRequestIsProxied(t *testing.T) {
 
 	now := time.Now()
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, auth.AgentClaims{
-		AgentID: "agent-1", ClaimID: "claim-1", Namespace: "project-1",
+		AgentID: "agent-1", ClaimID: "claim-1", Namespace: "project-1", Port: 8080,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer: auth.Issuer, ID: "access-token-session-proxy-test",
 			IssuedAt: jwt.NewNumericDate(now), ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
@@ -222,5 +234,75 @@ func TestTokenExchangeSessionRequestIsProxied(t *testing.T) {
 	}
 	if !proxyCalled {
 		t.Fatal("authenticated session request was not passed to the proxy")
+	}
+}
+
+func TestSessionRequestUsesClaimPortAndFilesUses80(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+	token := signedAccessToken(t, "test-secret", "target-port-flow", time.Now().Add(time.Hour))
+	var targets []string
+	rp := proxy.New()
+	rp.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		targets = append(targets, r.URL.Host)
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	})
+	handler := handleRequest(rp)
+
+	exchange := httptest.NewRequest(http.MethodGet, "/dashboard?token="+token, nil)
+	exchange.Header.Set("X-Forwarded-Proto", "https")
+	exchangeRec := httptest.NewRecorder()
+	handler.ServeHTTP(exchangeRec, exchange)
+	cookie := exchangeRec.Result().Cookies()[0]
+	for _, path := range []string{"/dashboard", "/files/download"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("%s status = %d, want %d", path, rec.Code, http.StatusNoContent)
+		}
+	}
+	want := []string{"claim-1.project-1.svc.cluster.local:8080", "claim-1.project-1.svc.cluster.local:80"}
+	if strings.Join(targets, ",") != strings.Join(want, ",") {
+		t.Fatalf("targets = %v, want %v", targets, want)
+	}
+}
+
+func TestDebugRedirectLogsInternalTargetOnlyInDebugMode(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+	oldOutput := log.Writer()
+	defer log.SetOutput(oldOutput)
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+
+	for _, tc := range []struct {
+		name, debug, path, want string
+	}{
+		{"regular", "true", "/dashboard", "internal_target=claim-1.project-1.svc.cluster.local:8080"},
+		{"files", "true", "/files/download", "internal_target=claim-1.project-1.svc.cluster.local:80"},
+		{"disabled", "false", "/dashboard", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AUTH_PROXY_DEBUG_ENABLED", tc.debug)
+			logs.Reset()
+			token := signedAccessToken(t, "test-secret", "debug-redirect-"+tc.name, time.Now().Add(time.Hour))
+			req := httptest.NewRequest(http.MethodGet, tc.path+"?token="+token, nil)
+			req.Header.Set("X-Forwarded-Proto", "https")
+			rec := httptest.NewRecorder()
+			handleRequest(http.NotFoundHandler()).ServeHTTP(rec, req)
+			if tc.want == "" {
+				if logs.Len() != 0 {
+					t.Fatalf("debug-disabled redirect logged %q", logs.String())
+				}
+				return
+			}
+			if !strings.Contains(logs.String(), tc.want) || strings.Contains(logs.String(), token) {
+				t.Fatalf("log = %q, want %q without token", logs.String(), tc.want)
+			}
+		})
 	}
 }

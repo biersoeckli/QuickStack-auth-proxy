@@ -3,6 +3,7 @@ package auth
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -85,7 +86,17 @@ func StageForAccessTokenError(err error) string {
 	if strings.Contains(err.Error(), "already been consumed") {
 		return "access_token_replayed"
 	}
+	if strings.Contains(err.Error(), "invalid token payload") {
+		return "access_token_invalid_payload"
+	}
 	return "access_token_parse_error"
+}
+
+// LogDebugRedirect records redirect metadata only. It deliberately excludes
+// credentials such as the access token and session-cookie value.
+func LogDebugRedirect(claims *AgentClaims, forwardedURL, target *url.URL, location string) {
+	log.Printf("auth proxy debug redirect: external=%s internal_target=%s path=%s claimId=%s namespace=%s port=%d",
+		location, target.Host, forwardedURL.Path, claims.ClaimID, claims.Namespace, claims.Port)
 }
 
 func cookieNames(r *http.Request) []string {

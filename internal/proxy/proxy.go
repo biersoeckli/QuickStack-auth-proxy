@@ -5,15 +5,17 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/yourorg/agent-auth-proxy/internal/auth"
 )
 
 // TargetFor mirrors targetUrlFor() + sandboxPortFor(): builds the in-cluster
-// service DNS name for the sandbox and picks the port based on path.
+// service DNS name for the sandbox. /files always uses port 80; every other
+// path uses the target port carried in the authenticated token claims.
 func TargetFor(claims *auth.AgentClaims, path string) *url.URL {
-	port := "4096"
+	port := strconv.Itoa(claims.Port)
 	if strings.HasPrefix(path, "/files") {
 		port = "80"
 	}

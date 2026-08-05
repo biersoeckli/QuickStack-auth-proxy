@@ -77,6 +77,9 @@ func handleRequest(rp http.Handler) http.HandlerFunc {
 			if forwardedURL.Fragment != "" {
 				location += "#" + forwardedURL.EscapedFragment()
 			}
+			if debugMode {
+				auth.LogDebugRedirect(claims, forwardedURL, proxy.TargetFor(claims, forwardedURL.Path), location)
+			}
 
 			http.SetCookie(w, auth.SessionCookie(sessionToken, r))
 			w.Header().Set("Location", location)

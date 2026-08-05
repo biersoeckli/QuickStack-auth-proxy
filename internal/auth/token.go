@@ -24,7 +24,13 @@ type AgentClaims struct {
 	AgentID   string `json:"agentId"`
 	ClaimID   string `json:"claimId"`
 	Namespace string `json:"namespace"`
+	Port      int    `json:"port"`
 	jwt.RegisteredClaims
+}
+
+// validPort accepts TCP ports that can be used as a sandbox target.
+func validPort(p int) bool {
+	return p >= 1 && p <= 65535
 }
 
 // sessionSecret is generated once per process, exactly like the Bun version's
@@ -113,6 +119,9 @@ func parseAndValidate(tokenStr string, secret []byte) (*AgentClaims, error) {
 	if claims.AgentID == "" || claims.ClaimID == "" || claims.Namespace == "" {
 		return nil, errors.New("invalid token payload")
 	}
+	if !validPort(claims.Port) {
+		return nil, errors.New("invalid token payload. Missing or invalid port")
+	}
 	return claims, nil
 }
 
@@ -157,6 +166,7 @@ func CreateSessionToken(c *AgentClaims) (string, error) {
 		AgentID:   c.AgentID,
 		ClaimID:   c.ClaimID,
 		Namespace: c.Namespace,
+		Port:      c.Port,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   c.Subject,
 			Issuer:    Issuer,

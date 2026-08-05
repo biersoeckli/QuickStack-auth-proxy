@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +19,7 @@ func TestVerifyAccessTokenAcceptsOriginalIssuer(t *testing.T) {
 		AgentID:   "agent-base-agent-c5bbc",
 		ClaimID:   "ac-agent-base-agent-c5bbc-82393158",
 		Namespace: "proj-agent-test-1-2cd39535",
+		Port:      8080,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   "jan.meier@ost.ch",
 			Issuer:    "quickstack-auth-proxy",
@@ -60,7 +62,7 @@ func TestConsumeAccessTokenRejectsReplay(t *testing.T) {
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, AgentClaims{
-		AgentID: "agent-1", ClaimID: "claim-1", Namespace: "project-1",
+		AgentID: "agent-1", ClaimID: "claim-1", Namespace: "project-1", Port: 8080,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer: Issuer, ID: "access-token-1", ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute)),
 		},
@@ -71,6 +73,67 @@ func TestConsumeAccessTokenRejectsReplay(t *testing.T) {
 	}
 	if _, err := VerifyAccessToken(tokenString); err == nil {
 		t.Fatal("replayed token verified, want rejection")
+	}
+}
+
+func TestVerifyAccessTokenRejectsMissingOrInvalidPort(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+	t.Run("missing", func(t *testing.T) {
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+			"agentId": "agent-1", "claimId": "claim-1", "namespace": "project-1",
+			"iss": Issuer, "jti": "access-missing-port", "exp": time.Now().Add(time.Minute).Unix(),
+		})
+		tokenString, err := token.SignedString([]byte("test-secret"))
+		if err != nil {
+			t.Fatalf("sign token: %v", err)
+		}
+		if _, err := VerifyAccessToken(tokenString); err == nil {
+			t.Fatal("VerifyAccessToken succeeded, want missing port rejection")
+		}
+	})
+	for _, port := range []int{0, -1, 65536} {
+		t.Run(fmt.Sprintf("port_%d", port), func(t *testing.T) {
+			token := jwt.NewWithClaims(jwt.SigningMethodHS256, AgentClaims{
+				AgentID: "agent-1", ClaimID: "claim-1", Namespace: "project-1", Port: port,
+				RegisteredClaims: jwt.RegisteredClaims{Issuer: Issuer, ID: fmt.Sprintf("access-%d", port), ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute))},
+			})
+			tokenString, err := token.SignedString([]byte("test-secret"))
+			if err != nil {
+				t.Fatalf("sign token: %v", err)
+			}
+			if _, err := VerifyAccessToken(tokenString); err == nil {
+				t.Fatal("VerifyAccessToken succeeded, want missing or invalid port rejection")
+			}
+		})
+	}
+}
+
+func TestCreateAndVerifySessionTokenPreservesPort(t *testing.T) {
+	access := &AgentClaims{AgentID: "agent-1", ClaimID: "claim-1", Namespace: "project-1", Port: 8080}
+	session, err := CreateSessionToken(access)
+	if err != nil {
+		t.Fatalf("CreateSessionToken: %v", err)
+	}
+	claims, err := VerifySessionToken(session)
+	if err != nil {
+		t.Fatalf("VerifySessionToken: %v", err)
+	}
+	if claims.Port != access.Port {
+		t.Fatalf("session port = %d, want %d", claims.Port, access.Port)
+	}
+}
+
+func TestVerifySessionTokenRejectsMissingPort(t *testing.T) {
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, AgentClaims{
+		AgentID: "agent-1", ClaimID: "claim-1", Namespace: "project-1",
+		RegisteredClaims: jwt.RegisteredClaims{Issuer: Issuer, ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute))},
+	})
+	tokenString, err := token.SignedString(sessionSecret)
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+	if _, err := VerifySessionToken(tokenString); err == nil {
+		t.Fatal("VerifySessionToken succeeded, want missing port rejection")
 	}
 }
 
