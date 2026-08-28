@@ -272,6 +272,34 @@ func TestSessionRequestUsesClaimPortAndFilesUses80(t *testing.T) {
 	}
 }
 
+func TestProxiedResponsesDisableCaching(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+	token := signedAccessToken(t, "test-secret", "no-store-response", time.Now().Add(time.Hour))
+	rp := proxy.New()
+	rp.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Cache-Control": []string{"public, max-age=3600"}},
+			Body:       io.NopCloser(strings.NewReader("ok")),
+		}, nil
+	})
+	handler := handleRequest(rp)
+
+	exchange := httptest.NewRequest(http.MethodGet, "/dashboard?token="+token, nil)
+	exchangeRec := httptest.NewRecorder()
+	handler.ServeHTTP(exchangeRec, exchange)
+	cookie := exchangeRec.Result().Cookies()[0]
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Cache-Control"); got != "no-store, max-age=0" {
+		t.Fatalf("Cache-Control = %q, want no-store, max-age=0", got)
+	}
+}
+
 func TestDebugRedirectLogsInternalTargetOnlyInDebugMode(t *testing.T) {
 	t.Setenv("AGENT_JWT_SECRET", "test-secret")
 	oldOutput := log.Writer()

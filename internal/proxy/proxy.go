@@ -92,5 +92,12 @@ func New() *httputil.ReverseProxy {
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		},
+		// The proxy URL is used as the iframe source and can remain stable while
+		// the sandbox content changes. Override any upstream cache policy so
+		// browsers and intermediary CDNs always fetch the current response.
+		ModifyResponse: func(resp *http.Response) error {
+			resp.Header.Set("Cache-Control", "no-store, max-age=0")
+			return nil
+		},
 	}
 }
