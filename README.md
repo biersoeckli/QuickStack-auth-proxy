@@ -29,10 +29,35 @@ the issuer `QuickStack-auth-proxy`, have a unique JWT ID (`jti`), an expiry
 | `claimId` | Sandbox service name |
 | `namespace` | Kubernetes namespace containing the sandbox |
 | `port` | **Required.** Target port for all routes except `/files`; must be from 1 through 65535. |
+| `type` | Optional for the browser flow. Must be `api` for direct bearer-token API/WebSocket access. |
 
 This is a breaking change: the QuickStack component that issues access tokens
 must include the numeric `port` claim. Access tokens (and existing session
 cookies) without a valid port are rejected.
+
+## API and WebSocket bearer tokens
+
+In addition to the browser flow, the proxy accepts reusable access tokens
+carried as `Authorization: Bearer <JWT>` when the token has the custom claim
+`"type": "api"`. Such requests are routed directly to the sandbox target; there
+is **no** token-to-session exchange, no redirect, and no session cookie.
+
+- API tokens are **reusable** and not tracked for replay; they are only bounded
+  by their `exp` claim. Because they do not rely on process-local state, they
+  also work across multiple replicas.
+- `type` must be exactly `api`; missing/other values are rejected with `401`.
+- `type: "api"` tokens are rejected by the browser `?token=` exchange, and
+  browser access tokens (no/other `type`) are rejected as bearer tokens.
+- The `port` claim is always used, including for `/files` paths, so API tokens
+  can never be routed to the `/files` port (`80`).
+- The `Authorization` header is stripped before proxying. `Origin` and
+  `Referer` are preserved for API/WebSocket requests (and stripped for the
+  browser flow) so the target can apply its own checks.
+- WebSocket upgrades are proxied transparently; the bearer token is validated
+  during the handshake.
+
+The `Authorization` header must reach the proxy; if forward-auth is configured,
+make sure the ingress forwards it.
 
 Each access token can be exchanged only once while this proxy process is
 running. Replay tracking and session-signing keys are held in memory, so use a

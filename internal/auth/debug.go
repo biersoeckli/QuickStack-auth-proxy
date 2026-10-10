@@ -47,7 +47,9 @@ type DebugConfig struct {
 }
 
 // BuildDebugReport creates a diagnostic report without exposing secrets.
-func BuildDebugReport(r *http.Request, forwardedURL *url.URL, stage string, tokenErr error) DebugReport {
+// tokenValue is the raw access or API token (if any) used to extract non-secret
+// timing metadata; it is never included in the report.
+func BuildDebugReport(r *http.Request, forwardedURL *url.URL, stage string, tokenErr error, tokenValue string) DebugReport {
 	now := time.Now().UTC()
 	report := DebugReport{
 		Stage:           stage,
@@ -70,8 +72,8 @@ func BuildDebugReport(r *http.Request, forwardedURL *url.URL, stage string, toke
 	}
 	if forwardedURL != nil {
 		report.ForwardedPath = redactedForwardedPath(forwardedURL)
-		report.AccessToken = decodeAccessTokenDebug(forwardedURL.Query().Get("token"), now)
 	}
+	report.AccessToken = decodeAccessTokenDebug(tokenValue, now)
 	report.Hint = debugHint(stage, report.RequestWasHTTPS)
 	return report
 }
@@ -92,11 +94,35 @@ func StageForAccessTokenError(err error) string {
 	return "access_token_parse_error"
 }
 
+// StageForAPITokenError maps a VerifyAPIToken error to a stable debug stage.
+func StageForAPITokenError(err error) string {
+	if errors.Is(err, jwt.ErrTokenExpired) {
+		return "api_token_expired"
+	}
+	if errors.Is(err, jwt.ErrTokenInvalidIssuer) {
+		return "api_token_bad_issuer"
+	}
+	if strings.Contains(err.Error(), `type must be`) {
+		return "api_token_bad_type"
+	}
+	if strings.Contains(err.Error(), "invalid token payload") || strings.Contains(err.Error(), "invalid api token payload") {
+		return "api_token_invalid_payload"
+	}
+	return "api_token_parse_error"
+}
+
 // LogDebugRedirect records redirect metadata only. It deliberately excludes
 // credentials such as the access token and session-cookie value.
 func LogDebugRedirect(claims *AgentClaims, forwardedURL, target *url.URL, location string) {
 	log.Printf("auth proxy debug redirect: external=%s internal_target=%s path=%s claimId=%s namespace=%s port=%d",
 		location, target.Host, forwardedURL.Path, claims.ClaimID, claims.Namespace, claims.Port)
+}
+
+// LogDebugAPIRequest records the resolved internal target for a directly
+// proxied API/WebSocket request. It deliberately excludes token values.
+func LogDebugAPIRequest(claims *AgentClaims, forwardedURL, target *url.URL) {
+	log.Printf("auth proxy debug api request: internal_target=%s path=%s claimId=%s namespace=%s port=%d",
+		target.Host, forwardedURL.Path, claims.ClaimID, claims.Namespace, claims.Port)
 }
 
 func cookieNames(r *http.Request) []string {
@@ -180,6 +206,16 @@ func debugHint(stage string, requestWasHTTPS bool) string {
 		return "Session token creation failed. Check auth proxy configuration and logs."
 	case "forwarded_url_parse_error":
 		return "Forwarded URL could not be parsed."
+	case "api_token_expired":
+		return "API bearer token was expired when it was verified."
+	case "api_token_bad_issuer":
+		return "API bearer token issuer does not match the auth proxy issuer."
+	case "api_token_bad_type":
+		return `API bearer token must carry the "type":"api" claim.`
+	case "api_token_invalid_payload":
+		return "API bearer token is missing a required claim or has an invalid port."
+	case "api_token_parse_error":
+		return "API bearer token could not be parsed or the signature is invalid."
 	default:
 		return fmt.Sprintf("Authentication failed at stage %s.", stage)
 	}

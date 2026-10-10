@@ -31,10 +31,11 @@ func main() {
 	}
 }
 
-// handleRequest mirrors the Bun implementation's handleRequest(): query-token
-// to session-cookie exchange, cookie verification, then proxying.
-// (Identical logic to the extended version - just without activity tracking
-// or the reaper wiring.)
+// handleRequest supports two authentication modes:
+//   - Reusable "type":"api" bearer tokens are verified and proxied directly,
+//     without a redirect or session cookie (for APIs and WebSockets).
+//   - Query-token to session-cookie exchange followed by cookie verification,
+//     mirroring the Bun implementation's handleRequest().
 func handleRequest(rp http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		forwardedURI := auth.ForwardedURI(r)
@@ -44,25 +45,41 @@ func handleRequest(rp http.Handler) http.HandlerFunc {
 			return
 		}
 
+		// A bearer credential is always handled as a directly routed, reusable
+		// API token; it never participates in the session-cookie exchange.
+		if bearer, ok := auth.BearerToken(r.Header.Get("Authorization")); ok {
+			debugMode := os.Getenv("AUTH_PROXY_DEBUG_ENABLED") == "true"
+			claims, err := auth.VerifyAPIToken(bearer)
+			if err != nil {
+				unauthorized(w, r, forwardedURL, auth.StageForAPITokenError(err), err, debugMode, bearer)
+				return
+			}
+			if debugMode {
+				auth.LogDebugAPIRequest(claims, forwardedURL, proxy.TargetFor(claims, forwardedURL.Path))
+			}
+			serve(w, r, rp, claims, forwardedURL)
+			return
+		}
+
 		token := forwardedURL.Query().Get("token")
 		debugMode := os.Getenv("AUTH_PROXY_DEBUG_ENABLED") == "true" && token != ""
 		if token != "" {
 			claims, err := auth.VerifyAccessToken(token)
 			if err != nil {
-				unauthorized(w, r, forwardedURL, auth.StageForAccessTokenError(err), err, debugMode)
+				unauthorized(w, r, forwardedURL, auth.StageForAccessTokenError(err), err, debugMode, token)
 				return
 			}
 			sessionToken, err := auth.CreateSessionToken(claims)
 			if err != nil {
 				if debugMode {
-					unauthorized(w, r, forwardedURL, "session_creation_failed", err, true)
+					unauthorized(w, r, forwardedURL, "session_creation_failed", err, true, token)
 					return
 				}
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 				return
 			}
 			if err := auth.ConsumeAccessToken(claims); err != nil {
-				unauthorized(w, r, forwardedURL, "access_token_replayed", err, debugMode)
+				unauthorized(w, r, forwardedURL, "access_token_replayed", err, debugMode, token)
 				return
 			}
 
@@ -102,12 +119,12 @@ func handleRequest(rp http.Handler) http.HandlerFunc {
 	}
 }
 
-func unauthorized(w http.ResponseWriter, r *http.Request, forwardedURL *url.URL, stage string, err error, debugMode bool) {
+func unauthorized(w http.ResponseWriter, r *http.Request, forwardedURL *url.URL, stage string, err error, debugMode bool, tokenValue string) {
 	if !debugMode {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	report := auth.BuildDebugReport(r, forwardedURL, stage, err)
+	report := auth.BuildDebugReport(r, forwardedURL, stage, err, tokenValue)
 	encoded, marshalErr := json.Marshal(report)
 	if marshalErr != nil {
 		log.Printf("auth proxy debug report serialization failed: %v", marshalErr)
