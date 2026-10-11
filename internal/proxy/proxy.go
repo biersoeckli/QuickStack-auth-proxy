@@ -12,11 +12,13 @@ import (
 )
 
 // TargetFor mirrors targetUrlFor() + sandboxPortFor(): builds the in-cluster
-// service DNS name for the sandbox. /files always uses port 80; every other
-// path uses the target port carried in the authenticated token claims.
+// service DNS name for the sandbox. /files always uses port 80 for the browser
+// flow; every other path uses the target port carried in the authenticated
+// token claims. API bearer tokens always use their port claim so they can
+// never be routed to the /files port.
 func TargetFor(claims *auth.AgentClaims, path string) *url.URL {
 	port := strconv.Itoa(claims.Port)
-	if strings.HasPrefix(path, "/files") {
+	if claims.Type != auth.TokenTypeAPI && strings.HasPrefix(path, "/files") {
 		port = "80"
 	}
 	host := fmt.Sprintf("%s.%s.svc.cluster.local", claims.ClaimID, claims.Namespace)
@@ -29,11 +31,16 @@ func TargetFor(claims *auth.AgentClaims, path string) *url.URL {
 // stripHeaders removes the headers that must not be forwarded to the sandbox,
 // mirroring requestHeadersForSandbox(). Auth-proxy's own session cookie is
 // stripped so the sandbox never sees it; any app cookies are preserved.
-func stripHeaders(h http.Header) {
+// Authorization is always removed. For the browser flow Origin and Referer are
+// also removed; for direct API/WebSocket requests they are preserved so the
+// target can apply its own origin checks.
+func stripHeaders(h http.Header, isAPI bool) {
 	h.Del("Authorization")
 	h.Del("X-Forwarded-Uri")
-	h.Del("Origin")
-	h.Del("Referer")
+	if !isAPI {
+		h.Del("Origin")
+		h.Del("Referer")
+	}
 }
 
 func stripAuthProxyCookie(h http.Header) {
@@ -78,15 +85,20 @@ func New() *httputil.ReverseProxy {
 			ctx := pr.In.Context()
 			claims := ClaimsFromContext(ctx)
 			forwarded := ForwardedURLFromContext(ctx) // path+query as seen by the client
+			isAPI := claims.Type == auth.TokenTypeAPI
 
 			target := TargetFor(claims, forwarded.Path)
 			pr.SetURL(target)
 			pr.Out.Host = target.Host // ensure Host header matches target, not original
 
 			pr.Out.URL.Path = forwarded.Path
-			pr.Out.URL.RawQuery = stripTokenParam(forwarded.RawQuery)
+			if isAPI {
+				pr.Out.URL.RawQuery = forwarded.RawQuery
+			} else {
+				pr.Out.URL.RawQuery = stripTokenParam(forwarded.RawQuery)
+			}
 
-			stripHeaders(pr.Out.Header)
+			stripHeaders(pr.Out.Header, isAPI)
 			stripAuthProxyCookie(pr.Out.Header)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {

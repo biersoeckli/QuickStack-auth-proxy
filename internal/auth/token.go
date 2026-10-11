@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,14 +18,22 @@ import (
 const (
 	Issuer     = "quickstack-auth-proxy"
 	CookieName = "qs-auth-proxy-session"
+
+	// TokenTypeAPI marks an access token that is used directly (reusable) as a
+	// bearer credential for API/WebSocket traffic instead of being exchanged
+	// for a session cookie.
+	TokenTypeAPI = "api"
 )
 
 // AgentClaims mirrors AgentAccessTokenPayload from the Bun implementation.
+// Type is optional for the browser/session flow and must be "api" for tokens
+// that are sent as a bearer credential and routed directly to the target.
 type AgentClaims struct {
 	AgentID   string `json:"agentId"`
 	ClaimID   string `json:"claimId"`
 	Namespace string `json:"namespace"`
 	Port      int    `json:"port"`
+	Type      string `json:"type,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -93,10 +102,49 @@ func VerifyAccessToken(tokenStr string) (*AgentClaims, error) {
 	if claims.ID == "" || claims.ExpiresAt == nil {
 		return nil, errors.New("invalid access token payload. Missing jti or exp")
 	}
+	if claims.Type == TokenTypeAPI {
+		return nil, errors.New("invalid access token payload. api tokens must be supplied as a bearer token")
+	}
 	if isAccessTokenConsumed(claims.ID) {
 		return nil, errors.New("access token has already been consumed")
 	}
 	return claims, nil
+}
+
+// VerifyAPIToken validates a reusable API token supplied as an
+// "Authorization: Bearer <jwt>" credential. Unlike the one-time exchange token
+// it is intentionally allowed to be reused and is never added to the replay
+// store; it is only bounded by its exp claim.
+func VerifyAPIToken(tokenStr string) (*AgentClaims, error) {
+	secret := os.Getenv("AGENT_JWT_SECRET")
+	if secret == "" {
+		return nil, errors.New("AGENT_JWT_SECRET is required")
+	}
+	claims, err := parseAndValidate(tokenStr, []byte(secret))
+	if err != nil {
+		return nil, err
+	}
+	if claims.ExpiresAt == nil {
+		return nil, errors.New("invalid api token payload. Missing exp")
+	}
+	if claims.Type != TokenTypeAPI {
+		return nil, fmt.Errorf("invalid api token payload. type must be %q", TokenTypeAPI)
+	}
+	return claims, nil
+}
+
+// BearerToken extracts the credential from an Authorization header. It returns
+// false when the header is absent or does not use the Bearer scheme.
+func BearerToken(header string) (string, bool) {
+	const prefix = "Bearer "
+	if len(header) < len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
+		return "", false
+	}
+	token := strings.TrimSpace(header[len(prefix):])
+	if token == "" {
+		return "", false
+	}
+	return token, true
 }
 
 // VerifySessionToken validates the HttpOnly cookie session token, signed with

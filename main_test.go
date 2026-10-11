@@ -46,6 +46,232 @@ func signedAccessToken(t *testing.T, secret, id string, expiresAt time.Time) str
 	return tokenString
 }
 
+func signedAPIToken(t *testing.T, secret, id string, expiresAt time.Time) string {
+	t.Helper()
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, auth.AgentClaims{
+		AgentID: "agent-1", ClaimID: "claim-1", Namespace: "project-1", Port: 8080, Type: auth.TokenTypeAPI,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer: auth.Issuer, ID: id, IssuedAt: jwt.NewNumericDate(time.Now()), ExpiresAt: jwt.NewNumericDate(expiresAt),
+		},
+	})
+	tokenString, err := token.SignedString([]byte(secret))
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+	return tokenString
+}
+
+func TestBearerAPITokenIsProxiedDirectly(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+	token := signedAPIToken(t, "test-secret", "api-direct", time.Now().Add(time.Hour))
+
+	proxyCalled := false
+	backend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyCalled = true
+		if got := r.URL.Path; got != "/api/items" {
+			t.Errorf("upstream path = %q, want /api/items", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := handleRequest(backend)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/items?view=1", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if !proxyCalled {
+		t.Fatal("bearer API request was not proxied directly")
+	}
+	if cookies := rec.Result().Cookies(); len(cookies) != 0 {
+		t.Fatalf("cookies = %d, want 0 (no session exchange)", len(cookies))
+	}
+	if rec.Header().Get("Location") != "" {
+		t.Fatal("bearer API request unexpectedly redirected")
+	}
+}
+
+func TestBearerAPITokenCanBeReused(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+	token := signedAPIToken(t, "test-secret", "api-reuse", time.Now().Add(time.Hour))
+
+	calls := 0
+	handler := handleRequest(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/api/items", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("request %d status = %d, want %d", i, rec.Code, http.StatusNoContent)
+		}
+	}
+	if calls != 3 {
+		t.Fatalf("upstream calls = %d, want 3", calls)
+	}
+}
+
+func TestBearerAPITokenUsesPortClaimForFiles(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+	token := signedAPIToken(t, "test-secret", "api-files", time.Now().Add(time.Hour))
+
+	var targets []string
+	rp := proxy.New()
+	rp.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		targets = append(targets, r.URL.Host)
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	})
+	handler := handleRequest(rp)
+
+	for _, path := range []string{"/api/items", "/files/download"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("%s status = %d, want %d", path, rec.Code, http.StatusNoContent)
+		}
+	}
+	want := []string{"claim-1.project-1.svc.cluster.local:8080", "claim-1.project-1.svc.cluster.local:8080"}
+	if strings.Join(targets, ",") != strings.Join(want, ",") {
+		t.Fatalf("targets = %v, want %v", targets, want)
+	}
+}
+
+func TestBearerAPITokenPreservesOriginAndStripsAuthorization(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+	token := signedAPIToken(t, "test-secret", "api-headers", time.Now().Add(time.Hour))
+
+	var gotOrigin, gotAuth string
+	rp := proxy.New()
+	rp.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		gotOrigin = r.Header.Get("Origin")
+		gotAuth = r.Header.Get("Authorization")
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	})
+	handler := handleRequest(rp)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/items", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Origin", "https://app.example.test")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if gotOrigin != "https://app.example.test" {
+		t.Fatalf("upstream Origin = %q, want preserved", gotOrigin)
+	}
+	if gotAuth != "" {
+		t.Fatalf("upstream Authorization = %q, want stripped", gotAuth)
+	}
+}
+
+func TestBearerAPITokenWrongTypeIsRejected(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, auth.AgentClaims{
+		AgentID: "agent-1", ClaimID: "claim-1", Namespace: "project-1", Port: 8080,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer: auth.Issuer, ID: "not-api", IssuedAt: jwt.NewNumericDate(time.Now()), ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		},
+	})
+	tokenString, err := token.SignedString([]byte("test-secret"))
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+
+	handler := handleRequest(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("request without api type should not be proxied")
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/api/items", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenString)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestBearerAPITokenDebugReportsBadTypeStage(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+	t.Setenv("AUTH_PROXY_DEBUG_ENABLED", "true")
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, auth.AgentClaims{
+		AgentID: "agent-1", ClaimID: "claim-1", Namespace: "project-1", Port: 8080,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer: auth.Issuer, ID: "not-api-debug", IssuedAt: jwt.NewNumericDate(time.Now()), ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		},
+	})
+	tokenString, err := token.SignedString([]byte("test-secret"))
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/items", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenString)
+	rec := httptest.NewRecorder()
+	handleRequest(http.NotFoundHandler()).ServeHTTP(rec, req)
+
+	var response debugResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode debug response: %v", err)
+	}
+	if response.Debug.Stage != "api_token_bad_type" {
+		t.Fatalf("stage = %q, want api_token_bad_type", response.Debug.Stage)
+	}
+}
+
+func TestSessionFlowStillStripsOrigin(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+	token := signedAccessToken(t, "test-secret", "session-origin", time.Now().Add(time.Hour))
+
+	var gotOrigin string
+	rp := proxy.New()
+	rp.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		gotOrigin = r.Header.Get("Origin")
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	})
+	handler := handleRequest(rp)
+
+	exchange := httptest.NewRequest(http.MethodGet, "/dashboard?token="+token, nil)
+	exchangeRec := httptest.NewRecorder()
+	handler.ServeHTTP(exchangeRec, exchange)
+	cookie := exchangeRec.Result().Cookies()[0]
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	req.AddCookie(cookie)
+	req.Header.Set("Origin", "https://app.example.test")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if gotOrigin != "" {
+		t.Fatalf("upstream Origin = %q, want stripped for session flow", gotOrigin)
+	}
+}
+
 func TestUnauthorizedWithoutTokenHasNoDebugResponse(t *testing.T) {
 	t.Setenv("AUTH_PROXY_DEBUG_ENABLED", "true")
 	rec := httptest.NewRecorder()

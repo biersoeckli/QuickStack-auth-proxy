@@ -143,6 +143,105 @@ func TestCookieNameMatchesOriginalImplementation(t *testing.T) {
 	}
 }
 
+func signedAPIToken(t *testing.T, typ string, exp *time.Time) string {
+	t.Helper()
+	claims := AgentClaims{
+		AgentID: "agent-1", ClaimID: "claim-1", Namespace: "project-1", Port: 8080, Type: typ,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer: Issuer, ID: "api-token-1", IssuedAt: jwt.NewNumericDate(time.Now()),
+		},
+	}
+	if exp != nil {
+		claims.ExpiresAt = jwt.NewNumericDate(*exp)
+	}
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte("test-secret"))
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+	return token
+}
+
+func TestVerifyAPITokenAcceptsAPIType(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+	exp := time.Now().Add(time.Hour)
+	tokenString := signedAPIToken(t, TokenTypeAPI, &exp)
+
+	claims, err := VerifyAPIToken(tokenString)
+	if err != nil {
+		t.Fatalf("verify api token: %v", err)
+	}
+	if claims.Type != TokenTypeAPI {
+		t.Fatalf("type = %q, want %q", claims.Type, TokenTypeAPI)
+	}
+}
+
+func TestVerifyAPITokenAllowsReuse(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+	exp := time.Now().Add(time.Hour)
+	tokenString := signedAPIToken(t, TokenTypeAPI, &exp)
+
+	for i := 0; i < 3; i++ {
+		if _, err := VerifyAPIToken(tokenString); err != nil {
+			t.Fatalf("verify attempt %d: %v", i, err)
+		}
+	}
+}
+
+func TestVerifyAPITokenRejectsWrongOrMissingType(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+	exp := time.Now().Add(time.Hour)
+	for _, typ := range []string{"", "web"} {
+		if _, err := VerifyAPIToken(signedAPIToken(t, typ, &exp)); err == nil {
+			t.Fatalf("type %q verified, want rejection", typ)
+		}
+	}
+}
+
+func TestVerifyAPITokenRejectsMissingExpiry(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+	if _, err := VerifyAPIToken(signedAPIToken(t, TokenTypeAPI, nil)); err == nil {
+		t.Fatal("api token without exp verified, want rejection")
+	}
+}
+
+func TestVerifyAccessTokenRejectsAPIType(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+	exp := time.Now().Add(time.Hour)
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, AgentClaims{
+		AgentID: "agent-1", ClaimID: "claim-1", Namespace: "project-1", Port: 8080, Type: TokenTypeAPI,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer: Issuer, ID: "api-via-query", IssuedAt: jwt.NewNumericDate(time.Now()), ExpiresAt: jwt.NewNumericDate(exp),
+		},
+	})
+	tokenString, err := token.SignedString([]byte("test-secret"))
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+	if _, err := VerifyAccessToken(tokenString); err == nil {
+		t.Fatal("api token accepted by exchange verification, want rejection")
+	}
+}
+
+func TestBearerTokenParsing(t *testing.T) {
+	for _, tc := range []struct {
+		header string
+		want   string
+		ok     bool
+	}{
+		{"Bearer abc.def.ghi", "abc.def.ghi", true},
+		{"bearer abc.def.ghi", "abc.def.ghi", true},
+		{"  ", "", false},
+		{"", "", false},
+		{"Basic abc", "", false},
+		{"Bearer ", "", false},
+	} {
+		got, ok := BearerToken(tc.header)
+		if ok != tc.ok || got != tc.want {
+			t.Fatalf("BearerToken(%q) = (%q, %v), want (%q, %v)", tc.header, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
 func TestSessionCookieSupportsCrossSiteIframes(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://auth-proxy.test", nil)
 	cookie := SessionCookie("session-token", req)
