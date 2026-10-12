@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log"
@@ -150,14 +149,52 @@ func TestBearerAPITokenUsesPortClaimForFiles(t *testing.T) {
 	}
 }
 
-func TestBearerAPITokenPreservesOriginAndSetsBasicAuthorization(t *testing.T) {
+func TestBearerAPITokenForwardsTargetAuthorization(t *testing.T) {
 	t.Setenv("AGENT_JWT_SECRET", "test-secret")
 	token := signedAPIToken(t, "test-secret", "api-headers", time.Now().Add(time.Hour))
 
-	var gotOrigin, gotAuth string
+	var gotOrigin, gotAuth, gotTargetAuth string
 	rp := proxy.New()
 	rp.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		gotOrigin = r.Header.Get("Origin")
+		gotAuth = r.Header.Get("Authorization")
+		gotTargetAuth = r.Header.Get("TargetAuthorization")
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	})
+	handler := handleRequest(rp)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/items", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("TargetAuthorization", "Basic dXNlcjpwYXNz")
+	req.Header.Set("Origin", "https://app.example.test")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if gotOrigin != "https://app.example.test" {
+		t.Fatalf("upstream Origin = %q, want preserved", gotOrigin)
+	}
+	if gotAuth != "Basic dXNlcjpwYXNz" {
+		t.Fatalf("upstream Authorization = %q, want forwarded TargetAuthorization", gotAuth)
+	}
+	if gotTargetAuth != "" {
+		t.Fatalf("upstream TargetAuthorization = %q, want stripped", gotTargetAuth)
+	}
+}
+
+func TestBearerAPITokenWithoutTargetAuthorizationSetsNone(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+	token := signedAPIToken(t, "test-secret", "api-no-target-auth", time.Now().Add(time.Hour))
+
+	var gotAuth string
+	rp := proxy.New()
+	rp.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		gotAuth = r.Header.Get("Authorization")
 		return &http.Response{
 			StatusCode: http.StatusNoContent,
@@ -169,19 +206,48 @@ func TestBearerAPITokenPreservesOriginAndSetsBasicAuthorization(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/items", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Origin", "https://app.example.test")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
 	}
-	if gotOrigin != "https://app.example.test" {
-		t.Fatalf("upstream Origin = %q, want preserved", gotOrigin)
+	if gotAuth != "" {
+		t.Fatalf("upstream Authorization = %q, want empty", gotAuth)
 	}
-	wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("opencode:opencode"))
-	if gotAuth != wantAuth {
-		t.Fatalf("upstream Authorization = %q, want %q", gotAuth, wantAuth)
+}
+
+func TestBearerAPITokenIgnoresTargetAuthorizationWithCRLF(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+	token := signedAPIToken(t, "test-secret", "api-target-auth-crlf", time.Now().Add(time.Hour))
+
+	var gotAuth, gotTargetAuth string
+	rp := proxy.New()
+	rp.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		gotAuth = r.Header.Get("Authorization")
+		gotTargetAuth = r.Header.Get("TargetAuthorization")
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	})
+	handler := handleRequest(rp)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/items", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header["TargetAuthorization"] = []string{"Basic dXNlcjpwYXNz\r\nX-Injected: 1"}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if gotAuth != "" {
+		t.Fatalf("upstream Authorization = %q, want empty for CRLF value", gotAuth)
+	}
+	if gotTargetAuth != "" {
+		t.Fatalf("upstream TargetAuthorization = %q, want stripped", gotTargetAuth)
 	}
 }
 
@@ -243,10 +309,12 @@ func TestSessionFlowStillStripsOrigin(t *testing.T) {
 	t.Setenv("AGENT_JWT_SECRET", "test-secret")
 	token := signedAccessToken(t, "test-secret", "session-origin", time.Now().Add(time.Hour))
 
-	var gotOrigin string
+	var gotOrigin, gotAuth, gotTargetAuth string
 	rp := proxy.New()
 	rp.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		gotOrigin = r.Header.Get("Origin")
+		gotAuth = r.Header.Get("Authorization")
+		gotTargetAuth = r.Header.Get("TargetAuthorization")
 		return &http.Response{
 			StatusCode: http.StatusNoContent,
 			Header:     make(http.Header),
@@ -263,6 +331,7 @@ func TestSessionFlowStillStripsOrigin(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
 	req.AddCookie(cookie)
 	req.Header.Set("Origin", "https://app.example.test")
+	req.Header.Set("TargetAuthorization", "Basic dXNlcjpwYXNz")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -271,6 +340,12 @@ func TestSessionFlowStillStripsOrigin(t *testing.T) {
 	}
 	if gotOrigin != "" {
 		t.Fatalf("upstream Origin = %q, want stripped for session flow", gotOrigin)
+	}
+	if gotAuth != "" {
+		t.Fatalf("upstream Authorization = %q, want empty for session flow", gotAuth)
+	}
+	if gotTargetAuth != "" {
+		t.Fatalf("upstream TargetAuthorization = %q, want stripped for session flow", gotTargetAuth)
 	}
 }
 

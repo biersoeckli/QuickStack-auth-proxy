@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/http/httputil"
@@ -44,11 +43,19 @@ func stripHeaders(h http.Header, isAPI bool) {
 	}
 }
 
-func setBasicAuthHeader(h http.Header, isAPI bool) {
-	if !isAPI {
+// applyTargetAuthorization consumes the client-supplied TargetAuthorization
+// header and, for directly routed API/WebSocket requests only, forwards its
+// value as the upstream Authorization header. The custom header is always
+// stripped so the sandbox never sees it, and no Authorization header is set
+// when TargetAuthorization is absent or empty. Values containing CR/LF are
+// ignored to prevent header injection.
+func applyTargetAuthorization(h http.Header, isAPI bool) {
+	value := h.Get("TargetAuthorization")
+	h.Del("TargetAuthorization")
+	if !isAPI || value == "" || strings.ContainsAny(value, "\r\n") {
 		return
 	}
-	h.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("opencode:opencode")))
+	h.Set("Authorization", value)
 }
 
 func stripAuthProxyCookie(h http.Header) {
@@ -107,7 +114,7 @@ func New() *httputil.ReverseProxy {
 			}
 
 			stripHeaders(pr.Out.Header, isAPI)
-			setBasicAuthHeader(pr.Out.Header, isAPI)
+			applyTargetAuthorization(pr.Out.Header, isAPI)
 			stripAuthProxyCookie(pr.Out.Header)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {

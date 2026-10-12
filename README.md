@@ -50,9 +50,14 @@ is **no** token-to-session exchange, no redirect, and no session cookie.
   browser access tokens (no/other `type`) are rejected as bearer tokens.
 - The `port` claim is always used, including for `/files` paths, so API tokens
   can never be routed to the `/files` port (`80`).
-- The `Authorization` header is stripped before proxying. `Origin` and
-  `Referer` are preserved for API/WebSocket requests (and stripped for the
-  browser flow) so the target can apply its own checks.
+- The `Authorization` header is stripped before proxying. To authenticate to a
+  target that requires an upstream credential, send a `TargetAuthorization`
+  header; for API/WebSocket requests its value is forwarded as the target's
+  `Authorization` header. The custom header itself is always stripped, and no
+  `Authorization` header is sent when `TargetAuthorization` is absent or empty
+  (values containing CR/LF are ignored). `Origin` and `Referer` are preserved
+  for API/WebSocket requests (and stripped for the browser flow) so the target
+  can apply its own checks.
 - WebSocket upgrades are proxied transparently; the bearer token is validated
   during the handshake.
 
@@ -66,7 +71,12 @@ restart invalidates existing sessions and resets access-token replay tracking.
 
 The session cookie is `HttpOnly`, `Secure`, and `SameSite=None`; deploy it
 behind HTTPS. The proxy removes its own session cookie, the `Authorization`,
-`X-Forwarded-Uri`, `Origin`, and `Referer` headers before proxying requests.
+`TargetAuthorization`, `X-Forwarded-Uri`, `Origin`, and `Referer` headers before
+proxying requests.
+
+The `TargetAuthorization` value is delivered to the target over the in-cluster
+hop, which is plain HTTP unless you add mTLS or a service mesh. It is not
+encrypted by the proxy: only the client-to-proxy hop is protected by TLS.
 
 ## Configuration
 
