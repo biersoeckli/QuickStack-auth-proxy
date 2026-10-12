@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log"
@@ -149,7 +150,7 @@ func TestBearerAPITokenUsesPortClaimForFiles(t *testing.T) {
 	}
 }
 
-func TestBearerAPITokenPreservesOriginAndStripsAuthorization(t *testing.T) {
+func TestBearerAPITokenPreservesOriginAndSetsBasicAuthorization(t *testing.T) {
 	t.Setenv("AGENT_JWT_SECRET", "test-secret")
 	token := signedAPIToken(t, "test-secret", "api-headers", time.Now().Add(time.Hour))
 
@@ -178,8 +179,9 @@ func TestBearerAPITokenPreservesOriginAndStripsAuthorization(t *testing.T) {
 	if gotOrigin != "https://app.example.test" {
 		t.Fatalf("upstream Origin = %q, want preserved", gotOrigin)
 	}
-	if gotAuth != "" {
-		t.Fatalf("upstream Authorization = %q, want stripped", gotAuth)
+	wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("opencode:opencode"))
+	if gotAuth != wantAuth {
+		t.Fatalf("upstream Authorization = %q, want %q", gotAuth, wantAuth)
 	}
 }
 

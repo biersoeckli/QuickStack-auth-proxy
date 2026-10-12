@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/http/httputil"
@@ -41,6 +42,13 @@ func stripHeaders(h http.Header, isAPI bool) {
 		h.Del("Origin")
 		h.Del("Referer")
 	}
+}
+
+func setBasicAuthHeader(h http.Header, isAPI bool) {
+	if !isAPI {
+		return
+	}
+	h.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("opencode:opencode")))
 }
 
 func stripAuthProxyCookie(h http.Header) {
@@ -99,6 +107,7 @@ func New() *httputil.ReverseProxy {
 			}
 
 			stripHeaders(pr.Out.Header, isAPI)
+			setBasicAuthHeader(pr.Out.Header, isAPI)
 			stripAuthProxyCookie(pr.Out.Header)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
