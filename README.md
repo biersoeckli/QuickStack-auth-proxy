@@ -74,10 +74,6 @@ behind HTTPS. The proxy removes its own session cookie, the `Authorization`,
 `TargetAuthorization`, `X-Forwarded-Uri`, `Origin`, and `Referer` headers before
 proxying requests.
 
-The `TargetAuthorization` value is delivered to the target over the in-cluster
-hop, which is plain HTTP unless you add mTLS or a service mesh. It is not
-encrypted by the proxy: only the client-to-proxy hop is protected by TLS.
-
 ## Configuration
 
 | Variable | Default | Description |
