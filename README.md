@@ -20,7 +20,7 @@ of that claim, on:
 ## Authentication behavior
 
 Access tokens must be HS256 JWTs signed with `AGENT_JWT_SECRET`. They must use
-the issuer `QuickStack-auth-proxy`, have a unique JWT ID (`jti`), an expiry
+the issuer `quickstack-auth-proxy`, have a unique JWT ID (`jti`), an expiry
 (`exp`), and the following claims:
 
 | Claim | Purpose |
@@ -38,31 +38,31 @@ cookies) without a valid port are rejected.
 ## API and WebSocket bearer tokens
 
 In addition to the browser flow, the proxy accepts reusable access tokens
-carried as `Authorization: Bearer <JWT>` when the token has the custom claim
+carried as `Proxy-Authorization: Bearer <JWT>` when the token has the custom claim
 `"type": "api"`. Such requests are routed directly to the sandbox target; there
 is **no** token-to-session exchange, no redirect, and no session cookie.
 
 - API tokens are **reusable** and not tracked for replay; they are only bounded
   by their `exp` claim. Because they do not rely on process-local state, they
   also work across multiple replicas.
-- `type` must be exactly `api`; missing/other values are rejected with `401`.
+- `type` must be exactly `api`; a malformed, expired, invalid, or wrong-type
+  proxy credential is rejected with `407 Proxy Authentication Required` and
+  `Proxy-Authenticate: Bearer`.
 - `type: "api"` tokens are rejected by the browser `?token=` exchange, and
   browser access tokens (no/other `type`) are rejected as bearer tokens.
 - The `port` claim is always used, including for `/files` paths, so API tokens
   can never be routed to the `/files` port (`80`).
-- The `Authorization` header is stripped before proxying. To authenticate to a
-  target that requires an upstream credential, send a `TargetAuthorization`
-  header; for API/WebSocket requests its value is forwarded as the target's
-  `Authorization` header. The custom header itself is always stripped, and no
-  `Authorization` header is sent when `TargetAuthorization` is absent or empty
-  (values containing CR/LF are ignored). `Origin` and `Referer` are preserved
-  for API/WebSocket requests (and stripped for the browser flow) so the target
-  can apply its own checks.
+- `Authorization`, `Origin`, and `Referer` are passed to the target unchanged,
+  in both modes. `Proxy-Authorization` is always removed before proxying.
 - WebSocket upgrades are proxied transparently; the bearer token is validated
   during the handshake.
 
-The `Authorization` header must reach the proxy; if forward-auth is configured,
-make sure the ingress forwards it.
+The `Proxy-Authorization` header must reach the proxy; if forward-auth is
+configured, make sure the ingress forwards it. For example:
+
+```sh
+curl -H "Proxy-Authorization: Bearer $TOKEN" https://<proxy-host>/path
+```
 
 Each access token can be exchanged only once while this proxy process is
 running. Replay tracking and session-signing keys are held in memory, so use a
@@ -70,9 +70,8 @@ single replica unless you add shared storage and a shared session secret. A
 restart invalidates existing sessions and resets access-token replay tracking.
 
 The session cookie is `HttpOnly`, `Secure`, and `SameSite=None`; deploy it
-behind HTTPS. The proxy removes its own session cookie, the `Authorization`,
-`TargetAuthorization`, `X-Forwarded-Uri`, `Origin`, and `Referer` headers before
-proxying requests.
+behind HTTPS. The proxy removes its own session cookie, `Proxy-Authorization`,
+and `X-Forwarded-Uri` before proxying requests.
 
 ## Configuration
 

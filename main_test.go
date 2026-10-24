@@ -76,7 +76,7 @@ func TestBearerAPITokenIsProxiedDirectly(t *testing.T) {
 	handler := handleRequest(backend)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/items?view=1", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Proxy-Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -106,7 +106,7 @@ func TestBearerAPITokenCanBeReused(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		req := httptest.NewRequest(http.MethodGet, "/api/items", nil)
-		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Proxy-Authorization", "Bearer "+token)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusNoContent {
@@ -136,7 +136,7 @@ func TestBearerAPITokenUsesPortClaimForFiles(t *testing.T) {
 
 	for _, path := range []string{"/api/items", "/files/download"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
-		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Proxy-Authorization", "Bearer "+token)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusNoContent {
@@ -149,16 +149,17 @@ func TestBearerAPITokenUsesPortClaimForFiles(t *testing.T) {
 	}
 }
 
-func TestBearerAPITokenForwardsTargetAuthorization(t *testing.T) {
+func TestBearerAPITokenPreservesTargetHeadersAndStripsProxyAuthorization(t *testing.T) {
 	t.Setenv("AGENT_JWT_SECRET", "test-secret")
 	token := signedAPIToken(t, "test-secret", "api-headers", time.Now().Add(time.Hour))
 
-	var gotOrigin, gotAuth, gotTargetAuth string
+	var gotOrigin, gotAuth, gotTargetAuth, gotProxyAuth string
 	rp := proxy.New()
 	rp.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		gotOrigin = r.Header.Get("Origin")
 		gotAuth = r.Header.Get("Authorization")
 		gotTargetAuth = r.Header.Get("TargetAuthorization")
+		gotProxyAuth = r.Header.Get("Proxy-Authorization")
 		return &http.Response{
 			StatusCode: http.StatusNoContent,
 			Header:     make(http.Header),
@@ -168,7 +169,8 @@ func TestBearerAPITokenForwardsTargetAuthorization(t *testing.T) {
 	handler := handleRequest(rp)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/items", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Proxy-Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
 	req.Header.Set("TargetAuthorization", "Basic dXNlcjpwYXNz")
 	req.Header.Set("Origin", "https://app.example.test")
 	rec := httptest.NewRecorder()
@@ -181,73 +183,52 @@ func TestBearerAPITokenForwardsTargetAuthorization(t *testing.T) {
 		t.Fatalf("upstream Origin = %q, want preserved", gotOrigin)
 	}
 	if gotAuth != "Basic dXNlcjpwYXNz" {
-		t.Fatalf("upstream Authorization = %q, want forwarded TargetAuthorization", gotAuth)
+		t.Fatalf("upstream Authorization = %q, want preserved", gotAuth)
 	}
-	if gotTargetAuth != "" {
-		t.Fatalf("upstream TargetAuthorization = %q, want stripped", gotTargetAuth)
+	if gotTargetAuth != "Basic dXNlcjpwYXNz" {
+		t.Fatalf("upstream TargetAuthorization = %q, want preserved", gotTargetAuth)
+	}
+	if gotProxyAuth != "" {
+		t.Fatalf("upstream Proxy-Authorization = %q, want stripped", gotProxyAuth)
 	}
 }
 
-func TestBearerAPITokenWithoutTargetAuthorizationSetsNone(t *testing.T) {
+func TestAuthorizationBearerAPITokenIsNotProxyAuthentication(t *testing.T) {
 	t.Setenv("AGENT_JWT_SECRET", "test-secret")
 	token := signedAPIToken(t, "test-secret", "api-no-target-auth", time.Now().Add(time.Hour))
 
-	var gotAuth string
-	rp := proxy.New()
-	rp.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		gotAuth = r.Header.Get("Authorization")
-		return &http.Response{
-			StatusCode: http.StatusNoContent,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader("")),
-		}, nil
-	})
-	handler := handleRequest(rp)
+	handler := handleRequest(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("Authorization must not authenticate the proxy")
+	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/items", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
-	}
-	if gotAuth != "" {
-		t.Fatalf("upstream Authorization = %q, want empty", gotAuth)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 }
 
-func TestBearerAPITokenIgnoresTargetAuthorizationWithCRLF(t *testing.T) {
+func TestProxyAuthorizationMalformedIsRejected(t *testing.T) {
 	t.Setenv("AGENT_JWT_SECRET", "test-secret")
 	token := signedAPIToken(t, "test-secret", "api-target-auth-crlf", time.Now().Add(time.Hour))
 
-	var gotAuth, gotTargetAuth string
-	rp := proxy.New()
-	rp.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		gotAuth = r.Header.Get("Authorization")
-		gotTargetAuth = r.Header.Get("TargetAuthorization")
-		return &http.Response{
-			StatusCode: http.StatusNoContent,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader("")),
-		}, nil
-	})
-	handler := handleRequest(rp)
+	handler := handleRequest(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("malformed Proxy-Authorization must not be proxied")
+	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/items", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header["TargetAuthorization"] = []string{"Basic dXNlcjpwYXNz\r\nX-Injected: 1"}
+	req.Header.Set("Proxy-Authorization", "Basic "+token)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	if rec.Code != http.StatusProxyAuthRequired {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusProxyAuthRequired)
 	}
-	if gotAuth != "" {
-		t.Fatalf("upstream Authorization = %q, want empty for CRLF value", gotAuth)
-	}
-	if gotTargetAuth != "" {
-		t.Fatalf("upstream TargetAuthorization = %q, want stripped", gotTargetAuth)
+	if got := rec.Header().Get("Proxy-Authenticate"); got != "Bearer" {
+		t.Fatalf("Proxy-Authenticate = %q, want Bearer", got)
 	}
 }
 
@@ -268,12 +249,12 @@ func TestBearerAPITokenWrongTypeIsRejected(t *testing.T) {
 		t.Fatal("request without api type should not be proxied")
 	}))
 	req := httptest.NewRequest(http.MethodGet, "/api/items", nil)
-	req.Header.Set("Authorization", "Bearer "+tokenString)
+	req.Header.Set("Proxy-Authorization", "Bearer "+tokenString)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	if rec.Code != http.StatusProxyAuthRequired {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusProxyAuthRequired)
 	}
 }
 
@@ -292,7 +273,7 @@ func TestBearerAPITokenDebugReportsBadTypeStage(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/items", nil)
-	req.Header.Set("Authorization", "Bearer "+tokenString)
+	req.Header.Set("Proxy-Authorization", "Bearer "+tokenString)
 	rec := httptest.NewRecorder()
 	handleRequest(http.NotFoundHandler()).ServeHTTP(rec, req)
 
@@ -303,16 +284,41 @@ func TestBearerAPITokenDebugReportsBadTypeStage(t *testing.T) {
 	if response.Debug.Stage != "api_token_bad_type" {
 		t.Fatalf("stage = %q, want api_token_bad_type", response.Debug.Stage)
 	}
+	if rec.Code != http.StatusProxyAuthRequired || rec.Header().Get("Proxy-Authenticate") != "Bearer" {
+		t.Fatalf("proxy authentication response = (%d, %q), want (407, Bearer)", rec.Code, rec.Header().Get("Proxy-Authenticate"))
+	}
 }
 
-func TestSessionFlowStillStripsOrigin(t *testing.T) {
+func TestProxyAuthorizationTakesPrecedenceOverCookieAndQueryToken(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+	accessToken := signedAccessToken(t, "test-secret", "priority-query", time.Now().Add(time.Hour))
+	session, err := auth.CreateSessionToken(&auth.AgentClaims{AgentID: "agent-1", ClaimID: "claim-1", Namespace: "project-1", Port: 8080})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/items?token="+accessToken, nil)
+	req.Header.Set("Proxy-Authorization", "Bearer invalid")
+	req.AddCookie(auth.SessionCookie(session, req))
+	rec := httptest.NewRecorder()
+	handleRequest(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("invalid Proxy-Authorization must not fall back to cookie or query token")
+	})).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusProxyAuthRequired || rec.Header().Get("Proxy-Authenticate") != "Bearer" {
+		t.Fatalf("proxy authentication response = (%d, %q), want (407, Bearer)", rec.Code, rec.Header().Get("Proxy-Authenticate"))
+	}
+}
+
+func TestSessionFlowPreservesTargetHeaders(t *testing.T) {
 	t.Setenv("AGENT_JWT_SECRET", "test-secret")
 	token := signedAccessToken(t, "test-secret", "session-origin", time.Now().Add(time.Hour))
 
-	var gotOrigin, gotAuth, gotTargetAuth string
+	var gotOrigin, gotReferer, gotAuth, gotTargetAuth string
 	rp := proxy.New()
 	rp.Transport = roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		gotOrigin = r.Header.Get("Origin")
+		gotReferer = r.Header.Get("Referer")
 		gotAuth = r.Header.Get("Authorization")
 		gotTargetAuth = r.Header.Get("TargetAuthorization")
 		return &http.Response{
@@ -331,6 +337,8 @@ func TestSessionFlowStillStripsOrigin(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
 	req.AddCookie(cookie)
 	req.Header.Set("Origin", "https://app.example.test")
+	req.Header.Set("Authorization", "Bearer application-token")
+	req.Header.Set("Referer", "https://app.example.test/page")
 	req.Header.Set("TargetAuthorization", "Basic dXNlcjpwYXNz")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -338,14 +346,17 @@ func TestSessionFlowStillStripsOrigin(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
 	}
-	if gotOrigin != "" {
-		t.Fatalf("upstream Origin = %q, want stripped for session flow", gotOrigin)
+	if gotOrigin != "https://app.example.test" {
+		t.Fatalf("upstream Origin = %q, want preserved for session flow", gotOrigin)
 	}
-	if gotAuth != "" {
-		t.Fatalf("upstream Authorization = %q, want empty for session flow", gotAuth)
+	if gotReferer != "https://app.example.test/page" {
+		t.Fatalf("upstream Referer = %q, want preserved for session flow", gotReferer)
 	}
-	if gotTargetAuth != "" {
-		t.Fatalf("upstream TargetAuthorization = %q, want stripped for session flow", gotTargetAuth)
+	if gotAuth != "Bearer application-token" {
+		t.Fatalf("upstream Authorization = %q, want preserved for session flow", gotAuth)
+	}
+	if gotTargetAuth != "Basic dXNlcjpwYXNz" {
+		t.Fatalf("upstream TargetAuthorization = %q, want preserved", gotTargetAuth)
 	}
 }
 

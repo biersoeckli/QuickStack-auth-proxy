@@ -32,7 +32,7 @@ func main() {
 }
 
 // handleRequest supports two authentication modes:
-//   - Reusable "type":"api" bearer tokens are verified and proxied directly,
+//   - Reusable "type":"api" Proxy-Authorization bearer tokens are verified and proxied directly,
 //     without a redirect or session cookie (for APIs and WebSockets).
 //   - Query-token to session-cookie exchange followed by cookie verification,
 //     mirroring the Bun implementation's handleRequest().
@@ -45,13 +45,18 @@ func handleRequest(rp http.Handler) http.HandlerFunc {
 			return
 		}
 
-		// A bearer credential is always handled as a directly routed, reusable
-		// API token; it never participates in the session-cookie exchange.
-		if bearer, ok := auth.BearerToken(r.Header.Get("Authorization")); ok {
+		// The presence of Proxy-Authorization selects the directly routed,
+		// reusable API-token mode. It never falls back to the browser flow.
+		if auth.HeaderPresent(r.Header, "Proxy-Authorization") {
 			debugMode := os.Getenv("AUTH_PROXY_DEBUG_ENABLED") == "true"
+			bearer, ok := auth.BearerToken(r.Header.Get("Proxy-Authorization"))
+			if !ok {
+				proxyAuthRequired(w, r, forwardedURL, "proxy_authorization_malformed", nil, debugMode, "")
+				return
+			}
 			claims, err := auth.VerifyAPIToken(bearer)
 			if err != nil {
-				unauthorized(w, r, forwardedURL, auth.StageForAPITokenError(err), err, debugMode, bearer)
+				proxyAuthRequired(w, r, forwardedURL, auth.StageForAPITokenError(err), err, debugMode, bearer)
 				return
 			}
 			if debugMode {
@@ -120,20 +125,29 @@ func handleRequest(rp http.Handler) http.HandlerFunc {
 }
 
 func unauthorized(w http.ResponseWriter, r *http.Request, forwardedURL *url.URL, stage string, err error, debugMode bool, tokenValue string) {
+	authenticationError(w, r, forwardedURL, stage, err, debugMode, tokenValue, http.StatusUnauthorized)
+}
+
+func proxyAuthRequired(w http.ResponseWriter, r *http.Request, forwardedURL *url.URL, stage string, err error, debugMode bool, tokenValue string) {
+	w.Header().Set("Proxy-Authenticate", "Bearer")
+	authenticationError(w, r, forwardedURL, stage, err, debugMode, tokenValue, http.StatusProxyAuthRequired)
+}
+
+func authenticationError(w http.ResponseWriter, r *http.Request, forwardedURL *url.URL, stage string, err error, debugMode bool, tokenValue string, status int) {
 	if !debugMode {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		http.Error(w, http.StatusText(status), status)
 		return
 	}
 	report := auth.BuildDebugReport(r, forwardedURL, stage, err, tokenValue)
 	encoded, marshalErr := json.Marshal(report)
 	if marshalErr != nil {
 		log.Printf("auth proxy debug report serialization failed: %v", marshalErr)
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		http.Error(w, http.StatusText(status), status)
 		return
 	}
 	log.Printf("%s", encoded)
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusUnauthorized)
+	w.WriteHeader(status)
 	_, _ = w.Write([]byte(`{"error":"unauthorized","debug":`))
 	_, _ = w.Write(encoded)
 	_, _ = w.Write([]byte("}"))

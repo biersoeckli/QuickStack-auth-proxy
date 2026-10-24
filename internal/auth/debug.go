@@ -33,7 +33,7 @@ type DebugReport struct {
 }
 
 type AccessTokenDebug struct {
-	Present            bool  `json:"present"`
+	Present            bool   `json:"present"`
 	Iat                *int64 `json:"iat,omitempty"`
 	Exp                *int64 `json:"exp,omitempty"`
 	SecondsUntilExpiry *int64 `json:"secondsUntilExpiry,omitempty"`
@@ -207,15 +207,17 @@ func debugHint(stage string, requestWasHTTPS bool) string {
 	case "forwarded_url_parse_error":
 		return "Forwarded URL could not be parsed."
 	case "api_token_expired":
-		return "API bearer token was expired when it was verified."
+		return "Proxy-Authorization bearer token was expired when it was verified."
 	case "api_token_bad_issuer":
-		return "API bearer token issuer does not match the auth proxy issuer."
+		return "Proxy-Authorization bearer token issuer does not match the auth proxy issuer."
 	case "api_token_bad_type":
-		return `API bearer token must carry the "type":"api" claim.`
+		return `Proxy-Authorization bearer token must carry the "type":"api" claim.`
 	case "api_token_invalid_payload":
-		return "API bearer token is missing a required claim or has an invalid port."
+		return "Proxy-Authorization bearer token is missing a required claim or has an invalid port."
 	case "api_token_parse_error":
-		return "API bearer token could not be parsed or the signature is invalid."
+		return "Proxy-Authorization bearer token could not be parsed or the signature is invalid."
+	case "proxy_authorization_malformed":
+		return "Proxy-Authorization must use the Bearer scheme with a non-empty token."
 	default:
 		return fmt.Sprintf("Authentication failed at stage %s.", stage)
 	}

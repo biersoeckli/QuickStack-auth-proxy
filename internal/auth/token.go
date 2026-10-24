@@ -112,7 +112,7 @@ func VerifyAccessToken(tokenStr string) (*AgentClaims, error) {
 }
 
 // VerifyAPIToken validates a reusable API token supplied as an
-// "Authorization: Bearer <jwt>" credential. Unlike the one-time exchange token
+// "Proxy-Authorization: Bearer <jwt>" credential. Unlike the one-time exchange token
 // it is intentionally allowed to be reused and is never added to the replay
 // store; it is only bounded by its exp claim.
 func VerifyAPIToken(tokenStr string) (*AgentClaims, error) {
@@ -133,7 +133,13 @@ func VerifyAPIToken(tokenStr string) (*AgentClaims, error) {
 	return claims, nil
 }
 
-// BearerToken extracts the credential from an Authorization header. It returns
+// HeaderPresent reports whether a header was supplied, including with an empty value.
+func HeaderPresent(h http.Header, name string) bool {
+	_, ok := h[http.CanonicalHeaderKey(name)]
+	return ok
+}
+
+// BearerToken extracts the credential from a Proxy-Authorization header. It returns
 // false when the header is absent or does not use the Bearer scheme.
 func BearerToken(header string) (string, bool) {
 	const prefix = "Bearer "

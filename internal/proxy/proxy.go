@@ -31,31 +31,10 @@ func TargetFor(claims *auth.AgentClaims, path string) *url.URL {
 // stripHeaders removes the headers that must not be forwarded to the sandbox,
 // mirroring requestHeadersForSandbox(). Auth-proxy's own session cookie is
 // stripped so the sandbox never sees it; any app cookies are preserved.
-// Authorization is always removed. For the browser flow Origin and Referer are
-// also removed; for direct API/WebSocket requests they are preserved so the
-// target can apply its own origin checks.
-func stripHeaders(h http.Header, isAPI bool) {
-	h.Del("Authorization")
+// Authorization, Origin, and Referer belong to the target and are preserved.
+func stripHeaders(h http.Header) {
 	h.Del("X-Forwarded-Uri")
-	if !isAPI {
-		h.Del("Origin")
-		h.Del("Referer")
-	}
-}
-
-// applyTargetAuthorization consumes the client-supplied TargetAuthorization
-// header and, for directly routed API/WebSocket requests only, forwards its
-// value as the upstream Authorization header. The custom header is always
-// stripped so the sandbox never sees it, and no Authorization header is set
-// when TargetAuthorization is absent or empty. Values containing CR/LF are
-// ignored to prevent header injection.
-func applyTargetAuthorization(h http.Header, isAPI bool) {
-	value := h.Get("TargetAuthorization")
-	h.Del("TargetAuthorization")
-	if !isAPI || value == "" || strings.ContainsAny(value, "\r\n") {
-		return
-	}
-	h.Set("Authorization", value)
+	h.Del("Proxy-Authorization")
 }
 
 func stripAuthProxyCookie(h http.Header) {
@@ -113,8 +92,7 @@ func New() *httputil.ReverseProxy {
 				pr.Out.URL.RawQuery = stripTokenParam(forwarded.RawQuery)
 			}
 
-			stripHeaders(pr.Out.Header, isAPI)
-			applyTargetAuthorization(pr.Out.Header, isAPI)
+			stripHeaders(pr.Out.Header)
 			stripAuthProxyCookie(pr.Out.Header)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
