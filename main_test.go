@@ -76,7 +76,7 @@ func TestBearerAPITokenIsProxiedDirectly(t *testing.T) {
 	handler := handleRequest(backend)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/items?view=1", nil)
-	req.Header.Set("Proxy-Authorization", "Bearer "+token)
+	req.Header.Set("X-QS-Proxy-Authorization", "Bearer "+token)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -106,7 +106,7 @@ func TestBearerAPITokenCanBeReused(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		req := httptest.NewRequest(http.MethodGet, "/api/items", nil)
-		req.Header.Set("Proxy-Authorization", "Bearer "+token)
+		req.Header.Set("X-QS-Proxy-Authorization", "Bearer "+token)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusNoContent {
@@ -136,7 +136,7 @@ func TestBearerAPITokenUsesPortClaimForFiles(t *testing.T) {
 
 	for _, path := range []string{"/api/items", "/files/download"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
-		req.Header.Set("Proxy-Authorization", "Bearer "+token)
+		req.Header.Set("X-QS-Proxy-Authorization", "Bearer "+token)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusNoContent {
@@ -149,7 +149,7 @@ func TestBearerAPITokenUsesPortClaimForFiles(t *testing.T) {
 	}
 }
 
-func TestBearerAPITokenPreservesTargetHeadersAndStripsProxyAuthorization(t *testing.T) {
+func TestBearerAPITokenPreservesTargetHeadersAndStripsQSProxyAuthorization(t *testing.T) {
 	t.Setenv("AGENT_JWT_SECRET", "test-secret")
 	token := signedAPIToken(t, "test-secret", "api-headers", time.Now().Add(time.Hour))
 
@@ -159,7 +159,7 @@ func TestBearerAPITokenPreservesTargetHeadersAndStripsProxyAuthorization(t *test
 		gotOrigin = r.Header.Get("Origin")
 		gotAuth = r.Header.Get("Authorization")
 		gotTargetAuth = r.Header.Get("TargetAuthorization")
-		gotProxyAuth = r.Header.Get("Proxy-Authorization")
+		gotProxyAuth = r.Header.Get("X-QS-Proxy-Authorization")
 		return &http.Response{
 			StatusCode: http.StatusNoContent,
 			Header:     make(http.Header),
@@ -169,7 +169,7 @@ func TestBearerAPITokenPreservesTargetHeadersAndStripsProxyAuthorization(t *test
 	handler := handleRequest(rp)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/items", nil)
-	req.Header.Set("Proxy-Authorization", "Bearer "+token)
+	req.Header.Set("X-QS-Proxy-Authorization", "Bearer "+token)
 	req.Header.Set("Authorization", "Basic dXNlcjpwYXNz")
 	req.Header.Set("TargetAuthorization", "Basic dXNlcjpwYXNz")
 	req.Header.Set("Origin", "https://app.example.test")
@@ -189,7 +189,7 @@ func TestBearerAPITokenPreservesTargetHeadersAndStripsProxyAuthorization(t *test
 		t.Fatalf("upstream TargetAuthorization = %q, want preserved", gotTargetAuth)
 	}
 	if gotProxyAuth != "" {
-		t.Fatalf("upstream Proxy-Authorization = %q, want stripped", gotProxyAuth)
+		t.Fatalf("upstream X-QS-Proxy-Authorization = %q, want stripped", gotProxyAuth)
 	}
 }
 
@@ -211,16 +211,16 @@ func TestAuthorizationBearerAPITokenIsNotProxyAuthentication(t *testing.T) {
 	}
 }
 
-func TestProxyAuthorizationMalformedIsRejected(t *testing.T) {
+func TestQSProxyAuthorizationMalformedIsRejected(t *testing.T) {
 	t.Setenv("AGENT_JWT_SECRET", "test-secret")
 	token := signedAPIToken(t, "test-secret", "api-target-auth-crlf", time.Now().Add(time.Hour))
 
 	handler := handleRequest(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("malformed Proxy-Authorization must not be proxied")
+		t.Fatal("malformed X-QS-Proxy-Authorization must not be proxied")
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/items", nil)
-	req.Header.Set("Proxy-Authorization", "Basic "+token)
+	req.Header.Set("X-QS-Proxy-Authorization", "Basic "+token)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -249,7 +249,7 @@ func TestBearerAPITokenWrongTypeIsRejected(t *testing.T) {
 		t.Fatal("request without api type should not be proxied")
 	}))
 	req := httptest.NewRequest(http.MethodGet, "/api/items", nil)
-	req.Header.Set("Proxy-Authorization", "Bearer "+tokenString)
+	req.Header.Set("X-QS-Proxy-Authorization", "Bearer "+tokenString)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -273,7 +273,7 @@ func TestBearerAPITokenDebugReportsBadTypeStage(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/items", nil)
-	req.Header.Set("Proxy-Authorization", "Bearer "+tokenString)
+	req.Header.Set("X-QS-Proxy-Authorization", "Bearer "+tokenString)
 	rec := httptest.NewRecorder()
 	handleRequest(http.NotFoundHandler()).ServeHTTP(rec, req)
 
@@ -289,7 +289,7 @@ func TestBearerAPITokenDebugReportsBadTypeStage(t *testing.T) {
 	}
 }
 
-func TestProxyAuthorizationTakesPrecedenceOverCookieAndQueryToken(t *testing.T) {
+func TestQSProxyAuthorizationTakesPrecedenceOverCookieAndQueryToken(t *testing.T) {
 	t.Setenv("AGENT_JWT_SECRET", "test-secret")
 	accessToken := signedAccessToken(t, "test-secret", "priority-query", time.Now().Add(time.Hour))
 	session, err := auth.CreateSessionToken(&auth.AgentClaims{AgentID: "agent-1", ClaimID: "claim-1", Namespace: "project-1", Port: 8080})
@@ -298,15 +298,31 @@ func TestProxyAuthorizationTakesPrecedenceOverCookieAndQueryToken(t *testing.T) 
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/items?token="+accessToken, nil)
-	req.Header.Set("Proxy-Authorization", "Bearer invalid")
+	req.Header.Set("X-QS-Proxy-Authorization", "Bearer invalid")
 	req.AddCookie(auth.SessionCookie(session, req))
 	rec := httptest.NewRecorder()
 	handleRequest(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("invalid Proxy-Authorization must not fall back to cookie or query token")
+		t.Fatal("invalid X-QS-Proxy-Authorization must not fall back to cookie or query token")
 	})).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusProxyAuthRequired || rec.Header().Get("Proxy-Authenticate") != "Bearer" {
 		t.Fatalf("proxy authentication response = (%d, %q), want (407, Bearer)", rec.Code, rec.Header().Get("Proxy-Authenticate"))
+	}
+}
+
+func TestStandardProxyAuthorizationDoesNotSelectAPITokenMode(t *testing.T) {
+	t.Setenv("AGENT_JWT_SECRET", "test-secret")
+	token := signedAccessToken(t, "test-secret", "standard-proxy-auth", time.Now().Add(time.Hour))
+
+	req := httptest.NewRequest(http.MethodGet, "/app?token="+token, nil)
+	req.Header.Set("Proxy-Authorization", "Bearer invalid")
+	rec := httptest.NewRecorder()
+	handleRequest(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("the query-token exchange must redirect before proxying")
+	})).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusFound)
 	}
 }
 

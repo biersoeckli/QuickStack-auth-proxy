@@ -207,17 +207,17 @@ func debugHint(stage string, requestWasHTTPS bool) string {
 	case "forwarded_url_parse_error":
 		return "Forwarded URL could not be parsed."
 	case "api_token_expired":
-		return "Proxy-Authorization bearer token was expired when it was verified."
+		return "X-QS-Proxy-Authorization bearer token was expired when it was verified."
 	case "api_token_bad_issuer":
-		return "Proxy-Authorization bearer token issuer does not match the auth proxy issuer."
+		return "X-QS-Proxy-Authorization bearer token issuer does not match the auth proxy issuer."
 	case "api_token_bad_type":
-		return `Proxy-Authorization bearer token must carry the "type":"api" claim.`
+		return `X-QS-Proxy-Authorization bearer token must carry the "type":"api" claim.`
 	case "api_token_invalid_payload":
-		return "Proxy-Authorization bearer token is missing a required claim or has an invalid port."
+		return "X-QS-Proxy-Authorization bearer token is missing a required claim or has an invalid port."
 	case "api_token_parse_error":
-		return "Proxy-Authorization bearer token could not be parsed or the signature is invalid."
-	case "proxy_authorization_malformed":
-		return "Proxy-Authorization must use the Bearer scheme with a non-empty token."
+		return "X-QS-Proxy-Authorization bearer token could not be parsed or the signature is invalid."
+	case "qs_proxy_authorization_malformed":
+		return "X-QS-Proxy-Authorization must use the Bearer scheme with a non-empty token."
 	default:
 		return fmt.Sprintf("Authentication failed at stage %s.", stage)
 	}

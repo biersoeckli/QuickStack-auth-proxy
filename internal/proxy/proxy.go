@@ -34,7 +34,7 @@ func TargetFor(claims *auth.AgentClaims, path string) *url.URL {
 // Authorization, Origin, and Referer belong to the target and are preserved.
 func stripHeaders(h http.Header) {
 	h.Del("X-Forwarded-Uri")
-	h.Del("Proxy-Authorization")
+	h.Del("X-QS-Proxy-Authorization")
 }
 
 func stripAuthProxyCookie(h http.Header) {

@@ -32,7 +32,7 @@ func main() {
 }
 
 // handleRequest supports two authentication modes:
-//   - Reusable "type":"api" Proxy-Authorization bearer tokens are verified and proxied directly,
+//   - Reusable "type":"api" X-QS-Proxy-Authorization bearer tokens are verified and proxied directly,
 //     without a redirect or session cookie (for APIs and WebSockets).
 //   - Query-token to session-cookie exchange followed by cookie verification,
 //     mirroring the Bun implementation's handleRequest().
@@ -45,13 +45,13 @@ func handleRequest(rp http.Handler) http.HandlerFunc {
 			return
 		}
 
-		// The presence of Proxy-Authorization selects the directly routed,
+		// The presence of X-QS-Proxy-Authorization selects the directly routed,
 		// reusable API-token mode. It never falls back to the browser flow.
-		if auth.HeaderPresent(r.Header, "Proxy-Authorization") {
+		if auth.HeaderPresent(r.Header, "X-QS-Proxy-Authorization") {
 			debugMode := os.Getenv("AUTH_PROXY_DEBUG_ENABLED") == "true"
-			bearer, ok := auth.BearerToken(r.Header.Get("Proxy-Authorization"))
+			bearer, ok := auth.BearerToken(r.Header.Get("X-QS-Proxy-Authorization"))
 			if !ok {
-				proxyAuthRequired(w, r, forwardedURL, "proxy_authorization_malformed", nil, debugMode, "")
+				proxyAuthRequired(w, r, forwardedURL, "qs_proxy_authorization_malformed", nil, debugMode, "")
 				return
 			}
 			claims, err := auth.VerifyAPIToken(bearer)

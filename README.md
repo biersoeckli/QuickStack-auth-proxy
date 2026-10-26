@@ -38,7 +38,7 @@ cookies) without a valid port are rejected.
 ## API and WebSocket bearer tokens
 
 In addition to the browser flow, the proxy accepts reusable access tokens
-carried as `Proxy-Authorization: Bearer <JWT>` when the token has the custom claim
+carried as `X-QS-Proxy-Authorization: Bearer <JWT>` when the token has the custom claim
 `"type": "api"`. Such requests are routed directly to the sandbox target; there
 is **no** token-to-session exchange, no redirect, and no session cookie.
 
@@ -53,15 +53,15 @@ is **no** token-to-session exchange, no redirect, and no session cookie.
 - The `port` claim is always used, including for `/files` paths, so API tokens
   can never be routed to the `/files` port (`80`).
 - `Authorization`, `Origin`, and `Referer` are passed to the target unchanged,
-  in both modes. `Proxy-Authorization` is always removed before proxying.
+  in both modes. `X-QS-Proxy-Authorization` is always removed before proxying.
 - WebSocket upgrades are proxied transparently; the bearer token is validated
   during the handshake.
 
-The `Proxy-Authorization` header must reach the proxy; if forward-auth is
+The `X-QS-Proxy-Authorization` header must reach the proxy; if forward-auth is
 configured, make sure the ingress forwards it. For example:
 
 ```sh
-curl -H "Proxy-Authorization: Bearer $TOKEN" https://<proxy-host>/path
+curl -H "X-QS-Proxy-Authorization: Bearer $TOKEN" https://<proxy-host>/path
 ```
 
 Each access token can be exchanged only once while this proxy process is
@@ -70,7 +70,7 @@ single replica unless you add shared storage and a shared session secret. A
 restart invalidates existing sessions and resets access-token replay tracking.
 
 The session cookie is `HttpOnly`, `Secure`, and `SameSite=None`; deploy it
-behind HTTPS. The proxy removes its own session cookie, `Proxy-Authorization`,
+behind HTTPS. The proxy removes its own session cookie, `X-QS-Proxy-Authorization`,
 and `X-Forwarded-Uri` before proxying requests.
 
 ## Configuration
